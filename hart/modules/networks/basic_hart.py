@@ -7,12 +7,66 @@ import functools
 import math
 from typing import Tuple, Union
 
-import hart_backend.fused_kernels
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import mlx.core as mx
 
+from hart.modules.models.transformer.sub_quadratic_attention import efficient_dot_product_attention
 from hart.modules.networks.utils import DropPath, drop_path
+
+try:
+    import hart_backend.fused_kernels
+
+    rms_norm = hart_backend.fused_kernels.rms_norm
+    fused_rope_forward = hart_backend.fused_kernels.fused_rope_forward_func
+    fused_rope_backward = hart_backend.fused_kernels.fused_rope_backward_func
+    fused_rope_with_pos_forward = hart_backend.fused_kernels.fused_rope_with_pos_forward_func
+except ImportError:
+    def rms_norm(
+        out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        epsilon: float,
+        use_quant: bool
+    ) -> None:
+        norm = F.rms_norm(x, (x.size(-1),), weight, epsilon)
+        if use_quant:
+            out.data = norm.round().to(torch.int8)
+        else:
+            out.data = norm
+
+
+    def fused_rope_forward(
+        t: torch.Tensor,
+        freqs: torch.Tensor,
+        transpose_output_memory: bool,
+    ) -> torch.Tensor:
+        raise NotImplementedError
+    #     dtype = t.dtype
+    #     tx, ty = einops.rearrange(t, '... (d r) -> ... d r', r=2).unbind(dim=-1)
+    #     t_rot = einops.rearrange(torch.stack((-ty, tx), dim=-1), '... d r -> ... (d r)')
+    #     return (t * freqs.cos() + t_rot * freqs.sin()).type(dtype)
+
+
+    def fused_rope_backward(
+        t: torch.Tensor,
+        freqs: torch.Tensor,
+        transpose_output_memory: bool,
+    ) -> torch.Tensor:
+        raise NotImplementedError
+    #     dtype = t.dtype
+    #     cos = t * freqs.cos()
+    #     x, y = einops.rearrange(t * freqs.sin(), '... (d r) -> ... d r', r=2).unbind(dim=-1)
+    #     sin = einops.rearrange(torch.stack((x, -y), dim=-1), '... d r -> ... (d r)')
+    #     return (cos + sin).type(dtype)
+
+    def fused_rope_with_pos_forward(
+        t: torch.Tensor,
+        freqs: torch.Tensor,
+        transpose_output_memory: bool,
+    ) -> torch.Tensor:
+        raise NotImplementedError
 
 # from visualizer import get_local
 
@@ -38,11 +92,11 @@ try:
 except ImportError:
     pass
 # automatically import faster attention implementations
-try:
-    import xformers
-    from xformers.ops import memory_efficient_attention
-except ImportError:
-    pass
+# try:
+#     import xformers
+#     from xformers.ops import memory_efficient_attention
+# except ImportError:
+#     pass
 try:
     from flash_attn import flash_attn_func  # qkv: BLHc, ret: BLHcq
 except ImportError:
@@ -185,9 +239,9 @@ class FusedRoPEFunc(torch.autograd.Function):
         if freqs.dtype != torch.float32:
             freqs = freqs.float()
         if tensor_format == "sbhd":
-            output = hart_backend.fused_kernels.fused_rope_forward_func(t, freqs, False)
+            output = fused_rope_forward(t, freqs, False)
         elif tensor_format == "bshd":
-            output = hart_backend.fused_kernels.fused_rope_forward_func(
+            output = fused_rope_forward(
                 t.transpose(0, 1), freqs, True
             ).transpose(0, 1)
         else:
@@ -203,11 +257,11 @@ class FusedRoPEFunc(torch.autograd.Function):
     ) -> Tuple[Union[torch.Tensor, None], ...]:
         (freqs,) = ctx.saved_tensors
         if ctx.tensor_format == "sbhd":
-            grad_input = hart_backend.fused_kernels.fused_rope_backward_func(
+            grad_input = fused_rope_backward(
                 grad_output, freqs, False
             )
         elif ctx.tensor_format == "bshd":
-            grad_input = hart_backend.fused_kernels.fused_rope_backward_func(
+            grad_input = fused_rope_backward(
                 grad_output.transpose(0, 1), freqs, True
             ).transpose(0, 1)
         else:
@@ -236,11 +290,11 @@ class FusedRoPEFuncWithPos(torch.autograd.Function):
         if freqs.dtype != torch.float32:
             freqs = freqs.float()
         if tensor_format == "sbhd":
-            output = hart_backend.fused_kernels.fused_rope_with_pos_forward_func(
+            output = fused_rope_with_pos_forward(
                 t, freqs, False
             )
         elif tensor_format == "bshd":
-            output = hart_backend.fused_kernels.fused_rope_with_pos_forward_func(
+            output = fused_rope_with_pos_forward(
                 t.transpose(0, 1), freqs, True
             ).transpose(0, 1)
         else:
@@ -498,7 +552,7 @@ class LlamaRMSNormFused(nn.Module):
             else torch.empty_like(x)
         )
         self.weight.data = self.weight.data.to(x)
-        hart_backend.fused_kernels.rms_norm(
+        rms_norm(
             out, x, self.weight.data, self.variance_epsilon, self.use_quant
         )
         return out
@@ -671,10 +725,15 @@ class MultiHeadCrossAttention(nn.Module):
         attn_bias = None
         if mask is not None:
             raise NotImplementedError
+            # TODO: Handle case where we didn't import xformers
             attn_bias = xformers.ops.fmha.BlockDiagonalMask.from_seqlens([N] * B, mask)
-        x = xformers.ops.memory_efficient_attention(
-            q, k, v, p=self.attn_drop.p, attn_bias=attn_bias
-        )
+        if memory_efficient_attention is not None:
+            x = memory_efficient_attention(
+                q, k, v, attn_bias=attn_bias, p=self.attn_drop.p
+            )
+        else:
+            # x = slow_attn(q, k, v, attn_mask=attn_bias, dropout_p=self.attn_drop.p)
+            x = efficient_dot_product_attention(q, k, v)  # TODO: Improve this
 
         x = x.view(B, -1, C)
         x = self.proj(x)
@@ -847,6 +906,7 @@ class SelfAttention(nn.Module):
 
         dropout_p = self.attn_drop if self.training else 0.0
         if using_flash:
+            print('Using flash!')
             oup = flash_attn_func(
                 q.to(dtype=main_type),
                 k.to(dtype=main_type),
@@ -855,6 +915,7 @@ class SelfAttention(nn.Module):
                 softmax_scale=self.scale,
             ).view(B, L, C)
         elif self.using_xform:
+            print('Using xform!')
             oup = memory_efficient_attention(
                 q.to(dtype=main_type),
                 k.to(dtype=main_type),
@@ -868,6 +929,7 @@ class SelfAttention(nn.Module):
                 scale=self.scale,
             ).view(B, L, C)
         else:
+            print('Using slow_attn!')
             oup = (
                 slow_attn(
                     query=q,
@@ -1116,11 +1178,17 @@ class LlamaAttention(nn.Module):
         #     raise NotImplementedError
         ################## Use optimized rotary embedding ##################
 
+        # TODO: Pretty sure we need this... maybe we need to reshape q?
+        idx_start = 0
+        head_len = q.shape[dim_cat]
         if self.caching:
             if self.cached_k is None:
+                self.cached_q = q  # TODO: Modify sub_quadratic_attention to avoid this caching
                 self.cached_k = k
                 self.cached_v = v
             else:
+                idx_start = self.cached_q.shape[dim_cat]
+                q = self.cached_q = torch.cat((self.cached_q, q), dim=dim_cat)
                 k = self.cached_k = torch.cat((self.cached_k, k), dim=dim_cat)
                 v = self.cached_v = torch.cat((self.cached_v, v), dim=dim_cat)
 
@@ -1147,16 +1215,28 @@ class LlamaAttention(nn.Module):
                 scale=self.scale,
             ).view(B, L, C)
         else:
+            qb, ql, qh, qc = q.shape
+            kb, kl, kh, kc = k.shape
+            vb, vl, vh, vc = v.shape
             oup = (
-                slow_attn(
-                    query=q,
-                    key=k,
-                    value=v,
+                efficient_dot_product_attention(
+                    query=q.transpose(1, 2).reshape(qb * qh, ql, qc),
+                    key_t=k.transpose(1, 2).reshape(kb * kh, kl, kc).transpose(1, 2),
+                    value=v.transpose(1, 2).reshape(vb * vh, vl, vc),
                     scale=self.scale,
-                    attn_mask=attn_bias,
-                    dropout_p=dropout_p,
+                    use_checkpoint=False,
                 )
-                .transpose(1, 2)
+                .reshape(qb, qh, ql, qc)
+                .narrow(1, idx_start, head_len)
+                # slow_attn(
+                #     query=q,
+                #     key=k,
+                #     value=v,
+                #     scale=self.scale,
+                #     attn_mask=attn_bias,
+                #     dropout_p=dropout_p,
+                # )
+                # .transpose(1, 2)
                 .reshape(B, L, C)
             )
 

@@ -2,6 +2,8 @@ import torch
 from torch.nn.functional import softmax
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from .tools import get_device
+
 __all__ = ["is_dangerous"]
 
 safety_policy = """
@@ -26,7 +28,7 @@ def is_dangerous(tokenizer, model, user_prompt, threshold=0.5):
     correctly.
     """
 
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+    inputs = tokenizer(prompt, return_tensors="pt").to(get_device())
     with torch.no_grad():
         logits = model(**inputs).logits
 

@@ -19,7 +19,7 @@ from transformers import (
 )
 
 from hart.modules.models.transformer import HARTForT2I
-from hart.utils import default_prompts, encode_prompts, llm_system_prompt
+from hart.utils import default_prompts, encode_prompts, llm_system_prompt, get_device
 
 
 def save_images(sample_imgs, sample_folder_dir, store_separately, prompts):
@@ -48,7 +48,7 @@ def save_images(sample_imgs, sample_folder_dir, store_separately, prompts):
 
 
 def main(args):
-    device = torch.device("cuda")
+    device = torch.device(get_device())
 
     model = AutoModel.from_pretrained(args.model_path)
     model = model.to(device)
@@ -69,7 +69,7 @@ def main(args):
 
     with torch.inference_mode():
         with torch.autocast(
-            "cuda", enabled=True, dtype=torch.float16, cache_enabled=True
+            get_device(), enabled=True, dtype=torch.float16, cache_enabled=True
         ):
 
             (

@@ -2,6 +2,8 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
+from hart.utils.tools import get_device
+
 
 def sample_with_top_k_top_p_(
     logits_BlV: torch.Tensor,
@@ -48,13 +50,25 @@ def gumbel_softmax_with_rng(
     rng: torch.Generator = None,
 ) -> torch.Tensor:
     if rng is None:
-        return F.gumbel_softmax(logits=logits, tau=tau, hard=hard, eps=eps, dim=dim)
+        return F.gumbel_softmax(
+            logits=logits.to('cpu' if get_device() == 'mps' else get_device()),
+            tau=tau,
+            hard=hard,
+            eps=eps,
+            dim=dim
+        ).to(get_device())
 
     gumbels = (
         -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
         .exponential_(generator=rng)
         .log()
     )
+    while torch.isnan(gumbels).any() or torch.isinf(gumbels).any():
+        gumbels = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_(generator=rng)
+            .log()
+        )
     gumbels = (logits + gumbels) / tau
     y_soft = gumbels.softmax(dim)
 

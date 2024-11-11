@@ -36,12 +36,12 @@ from hart.utils import get_device
 
 
 def mask_by_order(mask_len, order, bsz, seq_len):
-    masking = torch.zeros(bsz, seq_len).cuda()
+    masking = torch.zeros(bsz, seq_len, device=get_device())
     masking = torch.scatter(
         masking,
         dim=-1,
         index=order[:, : mask_len.long()],
-        src=torch.ones(bsz, seq_len).cuda(),
+        src=torch.ones(bsz, seq_len, device=get_device()),
     ).bool()
     return masking
 
@@ -113,7 +113,7 @@ class HARTForT2I(PreTrainedModel):
         )
 
         vae_local = HARTAutoEncoderWithDisc.from_pretrained(vae_path).vae
-        vae_local = vae_local.cuda()
+        vae_local = vae_local.to(get_device())
         vae_local.requires_grad_(False)
 
         assert embed_dim % num_heads == 0
@@ -260,7 +260,7 @@ class HARTForT2I(PreTrainedModel):
         self.register_buffer(
             "attn_bias_for_masking", attn_bias_for_masking.contiguous()
         )
-        print(attn_bias_for_masking.shape)
+        # print(attn_bias_for_masking.shape)
 
         # 6. classifier head
         self.head_nm = AdaLNBeforeHead(self.C, self.D, norm_layer=norm_layer)
@@ -372,6 +372,7 @@ class HARTForT2I(PreTrainedModel):
 
         for b in self.blocks:
             b.attn.kv_caching(True)
+        print('Iterating for', len(self.patch_nums[:-1]), 'iterations')
         for si, pn in enumerate(self.patch_nums[:-1]):  # si: i-th segment
             ratio = si / self.num_stages_minus_1
             # last_L = cur_L
@@ -403,6 +404,7 @@ class HARTForT2I(PreTrainedModel):
             if si == 0:
                 logits_BlV = logits_BlV[:, [-1], :]
 
+            print('Iteration', si)
             idx_Bl = sample_with_top_k_top_p_(
                 logits_BlV,
                 rng=rng,
@@ -437,8 +439,8 @@ class HARTForT2I(PreTrainedModel):
 
         ################ last stage maskgit ################
         si = len(self.patch_nums) - 1
-        mask = torch.ones(B, self.last_level_pns).cuda()
-        tokens = torch.zeros(B, self.last_level_pns, self.Cvae).cuda()
+        mask = torch.ones(B, self.last_level_pns, device=get_device())
+        tokens = torch.zeros(B, self.last_level_pns, self.Cvae, device=get_device())
         orders = self.sample_orders(B)
 
         num_iter = num_maskgit_iters
@@ -447,10 +449,10 @@ class HARTForT2I(PreTrainedModel):
         for step in indices:
             # mask_ratio = 1 - (step + 1) / num_iter
             mask_ratio = np.cos(math.pi / 2.0 * (step + 1) / num_iter)
-            mask_len = torch.Tensor([np.floor(self.last_level_pns * mask_ratio)]).cuda()
+            mask_len = torch.tensor([np.floor(self.last_level_pns * mask_ratio).astype(np.int64)], device=get_device())
             # masks out at least one for the next iteration
             mask_len = torch.maximum(
-                torch.Tensor([1]).cuda(),
+                torch.tensor([1], device=get_device()),
                 torch.minimum(torch.sum(mask, dim=-1, keepdims=True) - 1, mask_len),
             )
             # get masking for next iteration and locations to be predicted in this iteration
@@ -538,7 +540,7 @@ class HARTForT2I(PreTrainedModel):
             order = np.array(list(range(self.last_level_pns)))
             np.random.shuffle(order)
             orders.append(order)
-        orders = torch.Tensor(np.array(orders)).cuda().long()
+        orders = torch.tensor(np.array(orders), device=get_device()).long()
         return orders
 
     def random_masking(self, x, orders):
@@ -602,7 +604,7 @@ class HARTForT2I(PreTrainedModel):
             - self.last_level_pns
         )
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type=get_device(), enabled=False):
             drop_pos = torch.where(
                 torch.randn(B, device=context.device) < self.cond_drop_rate
             )[0]

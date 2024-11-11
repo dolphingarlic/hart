@@ -6,6 +6,8 @@ import torch.nn as nn
 from torch import distributed as tdist
 from torch.nn import functional as F
 
+from hart.utils.tools import get_device
+
 # this file only defines the VectorQuantizer2 used in VQVAE
 __all__ = [
     "VectorQuantizer2",
@@ -105,7 +107,7 @@ class VectorQuantizer2(nn.Module):
 
         idx_list = []
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type=get_device(), enabled=False):
             mean_vq_loss: torch.Tensor = 0.0
             vocab_hit_V = torch.zeros(
                 self.vocab_size, dtype=torch.float, device=f_BChw.device

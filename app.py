@@ -21,7 +21,7 @@ from transformers import (
 )
 
 from hart.modules.models.transformer import HARTForT2I
-from hart.utils import default_prompts, encode_prompts, llm_system_prompt, safety_check
+from hart.utils import default_prompts, encode_prompts, llm_system_prompt, safety_check, get_device
 
 DESCRIPTION = (
     """# HART: Efficient Visual Generation with Hybrid Autoregressive Transformer"""
@@ -37,7 +37,7 @@ MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", "1024"))
 USE_TORCH_COMPILE = os.getenv("USE_TORCH_COMPILE", "0") == "1"
 ENABLE_CPU_OFFLOAD = os.getenv("ENABLE_CPU_OFFLOAD", "0") == "1"
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device(get_device())
 
 NUM_IMAGES_PER_PROMPT = 1
 
@@ -72,7 +72,7 @@ def generate(
 
     with torch.inference_mode():
         with torch.autocast(
-            "cuda", enabled=True, dtype=torch.float16, cache_enabled=True
+            get_device(), enabled=True, dtype=torch.float16, cache_enabled=True
         ):
 
             (
