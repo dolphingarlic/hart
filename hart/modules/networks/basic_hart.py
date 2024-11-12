@@ -1178,17 +1178,11 @@ class LlamaAttention(nn.Module):
         #     raise NotImplementedError
         ################## Use optimized rotary embedding ##################
 
-        # TODO: Pretty sure we need this... maybe we need to reshape q?
-        idx_start = 0
-        head_len = q.shape[dim_cat]
         if self.caching:
             if self.cached_k is None:
-                self.cached_q = q  # TODO: Modify sub_quadratic_attention to avoid this caching
                 self.cached_k = k
                 self.cached_v = v
             else:
-                idx_start = self.cached_q.shape[dim_cat]
-                q = self.cached_q = torch.cat((self.cached_q, q), dim=dim_cat)
                 k = self.cached_k = torch.cat((self.cached_k, k), dim=dim_cat)
                 v = self.cached_v = torch.cat((self.cached_v, v), dim=dim_cat)
 
@@ -1220,23 +1214,14 @@ class LlamaAttention(nn.Module):
             vb, vl, vh, vc = v.shape
             oup = (
                 efficient_dot_product_attention(
-                    query=q.transpose(1, 2).reshape(qb * qh, ql, qc),
-                    key_t=k.transpose(1, 2).reshape(kb * kh, kl, kc).transpose(1, 2),
-                    value=v.transpose(1, 2).reshape(vb * vh, vl, vc),
+                    query=q.reshape(qb * ql, qh, qc),
+                    key_t=k.reshape(kb * kl, kh, kc).transpose(-2, -1),
+                    value=v.reshape(vb * vl, vh, vc),
                     scale=self.scale,
                     use_checkpoint=False,
                 )
-                .reshape(qb, qh, ql, qc)
-                .narrow(1, idx_start, head_len)
-                # slow_attn(
-                #     query=q,
-                #     key=k,
-                #     value=v,
-                #     scale=self.scale,
-                #     attn_mask=attn_bias,
-                #     dropout_p=dropout_p,
-                # )
-                # .transpose(1, 2)
+                .reshape(qb, ql, qh, qc)
+                .transpose(1, 2)
                 .reshape(B, L, C)
             )
 

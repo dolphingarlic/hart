@@ -173,7 +173,7 @@ if __name__ == "__main__":
         "--more_smooth",
         type=bool,
         help="Turn on for more visually smooth samples.",
-        default=True,  # TODO: This should be true in general
+        default=True,
     )
     parser.add_argument(
         "--sample_folder_dir",
