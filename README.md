@@ -1,30 +1,47 @@
-# HART: Efficient Visual Generation with Hybrid Autoregressive Transformer
+# Hybrid Autoregressive Transformer (HART) on ARM
 
 \[[Paper](https://arxiv.org/abs/2410.10812)\] \[[Demo](https://hart.mit.edu)\] \[[Project](https://hanlab.mit.edu/projects/hart)\]
 
 ![teaser_Page1](assets/teaser.jpg)
 
-## News
-
-- \[2024/10\] 🔥 We open source the inference code and [Gradio demo](https://hart.mit.edu) for HART!
-
 ## Abstract
 
-We introduce Hybrid Autoregressive Transformer (HART), an autoregressive (AR) visual generation model capable of directly generating 1024x1024 images, rivaling diffusion models in image generation quality. Existing AR models face limitations due to the poor image reconstruction quality of their discrete tokenizers and the prohibitive training costs associated with generating 1024px images. To address these challenges, we present the hybrid tokenizer, which decomposes the continuous latents from the autoencoder into two components: discrete tokens representing the big picture and continuous tokens representing the residual components that cannot be represented by the discrete tokens. The discrete component is modeled by a scalable-resolution discrete AR model, while the continuous component is learned with a lightweight residual diffusion module with only 37M parameters. Compared with the discrete-only VAR tokenizer, our hybrid approach improves reconstruction FID from **2.11** to **0.30** on MJHQ-30K, leading to a **31%** generation FID improvement from **7.85** to **5.38**. HART also outperforms state-of-the-art diffusion models in both FID and CLIP score, with **4.5-7.7x** higher throughput and **6.9-13.4x** lower MACs.
+Existing image generation models require large amounts of resources to generate an image given a text prompt. One of the main bottlenecks is the large amounts of memory required to perform even a single inference. Running existing models on personal computers often leads to an out-of-memory (OOM) failure. Previous works like the Hybrid Autoregressive Transformer (HART) attempts to reduce the resource usage of image generation models, while still rivaling diffusion models in image generation quality. The provided open source implementation deploys HART on laptops with NVIDIA GPUs, but it has not supported model deployment on Macbook GPUs yet. The goal of this project is to deploy and optimize HART on Macbooks using the PyTorch MPS backend and Apple’s MLX framework.
 
 ## Setup
 
-Download the repo:
+Download the repository and make a conda environment:
 
 ```bash
-git clone https://github.com/mit-han-lab/hart
+git clone https://github.com/dolphingarlic/hart.git
+git checkout mps-conversion
 cd hart
 conda create -n hart python=3.10
 conda activate hart
-conda install -c nvidia cuda-toolkit -y
-pip install -e .
-cd hart/kernels && python setup.py install
 ```
+
+For M2/M3 Macs, add this to zshrc:
+
+```bash
+export CC=/opt/homebrew/opt/llvm/bin/clang
+export CXX=/opt/homebrew/opt/llvm/bin/clang++
+```
+
+And activate zshrc:
+
+```bash
+source ~/.zshrc
+brew install llvm libopenmp
+```
+
+Install other packages:
+
+```bash
+pip install -e .
+cd ..
+```
+
+Download the following two repositories outside the hart repository (in the same level as HART).
 
 Download Qwen2-VL-1.5B-Instruct
 
@@ -38,13 +55,21 @@ Download HART tokenizer and models
 git clone https://huggingface.co/mit-han-lab/hart-0.7b-1024px
 ```
 
-Download the safety check model:
+Go into the Qwen and HART tokenizer repos and run:
 
 ```bash
-git clone https://huggingface.co/google/shieldgemma-2b
+git lfs install
+git lfs pull
 ```
 
-Note: We use ShieldGemma-2B from Google DeepMind to filter out unsafe prompts in our demo. We strongly recommend using it if you are distributing our demo publicly.
+To test that everything was installed correctly, run:
+
+```bash
+./sample.sh
+```
+
+And you should get a crying graduate student!
+
 
 ## Usage
 
@@ -94,7 +119,7 @@ python latency_profile.py --model_path /path/to/model \
 
 ## Acknowledgements
 
-Our codebase is inspired by amazing open source research projects such as [VAR](https://github.com/FoundationVision/VAR) and [MAR](https://github.com/LTH14/mar). The authors would like to thank Tianhong Li from MIT, Lijun Yu from Google DeepMind, Kaiwen Zha from MIT and Yunhao Fang from UCSD for helpful discussions; and Paul Palei, Mike Hobbs, Chris Hill, Michel Erb from MIT for setting up the online demo and maintaining the server.
+Thank you Professor Song Han and Teaching Assistant Haotian Tang for providing us the resources for this final project for 6.5940 TinyML and Efficient Deep Learning Computing.
 
 ## Citation
 
