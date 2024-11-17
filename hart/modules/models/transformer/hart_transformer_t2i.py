@@ -372,8 +372,9 @@ class HARTForT2I(PreTrainedModel):
 
         for b in self.blocks:
             b.attn.kv_caching(True)
-        print('Iterating for', len(self.patch_nums[:-1]), 'iterations')
+        print('Iterating for', len(self.patch_nums), 'iterations')
         for si, pn in enumerate(self.patch_nums[:-1]):  # si: i-th segment
+            print('Starting iteration', si)
             ratio = si / self.num_stages_minus_1
             # last_L = cur_L
             if si > 0:
@@ -404,7 +405,6 @@ class HARTForT2I(PreTrainedModel):
             if si == 0:
                 logits_BlV = logits_BlV[:, [-1], :]
 
-            print('Iteration', si)
             idx_Bl = sample_with_top_k_top_p_(
                 logits_BlV,
                 rng=rng,
@@ -439,6 +439,7 @@ class HARTForT2I(PreTrainedModel):
 
         ################ last stage maskgit ################
         si = len(self.patch_nums) - 1
+        print('Starting iteration', si)
         mask = torch.ones(B, self.last_level_pns, device=get_device())
         tokens = torch.zeros(B, self.last_level_pns, self.Cvae, device=get_device())
         orders = self.sample_orders(B)

@@ -63,6 +63,7 @@ def main(args):
             torch.load(
                 os.path.join(args.model_path, "ema_model.bin"),
                 map_location=device,
+                weights_only=True,
             )
         )
 

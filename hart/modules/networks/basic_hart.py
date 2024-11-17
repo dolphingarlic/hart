@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import mlx.core as mx
+import numpy as np
 
 from hart.modules.models.transformer.sub_quadratic_attention import efficient_dot_product_attention
 from hart.modules.networks.utils import DropPath, drop_path
@@ -30,11 +31,11 @@ except ImportError:
         epsilon: float,
         use_quant: bool
     ) -> None:
-        norm = F.rms_norm(x, (x.size(-1),), weight, epsilon)
+        norm = mx.fast.rms_norm(mx.array(x.cpu()), mx.array(weight.cpu()), epsilon)
         if use_quant:
-            out.data = norm.round().to(torch.int8)
+            out.data = torch.tensor(np.array(norm, dtype=np.int8), dtype=torch.int8, device=x.device)
         else:
-            out.data = norm
+            out.data = torch.tensor(np.array(norm), device=x.device)
 
 
     def fused_rope_forward(
@@ -1209,21 +1210,13 @@ class LlamaAttention(nn.Module):
                 scale=self.scale,
             ).view(B, L, C)
         else:
-            qb, ql, qh, qc = q.shape
-            kb, kl, kh, kc = k.shape
-            vb, vl, vh, vc = v.shape
-            oup = (
-                efficient_dot_product_attention(
-                    query=q.reshape(qb * ql, qh, qc),
-                    key_t=k.reshape(kb * kl, kh, kc).transpose(-2, -1),
-                    value=v.reshape(vb * vl, vh, vc),
-                    scale=self.scale,
-                    use_checkpoint=False,
-                )
-                .reshape(qb, ql, qh, qc)
-                .transpose(1, 2)
-                .reshape(B, L, C)
-            )
+            oup_mx = mx.fast.scaled_dot_product_attention(
+                mx.array(q.cpu().numpy()),
+                mx.array(k.cpu().numpy()),
+                mx.array(v.cpu().numpy()),
+                scale=self.scale
+            ).transpose(0, 2, 1, 3).reshape(B, L, C)
+            oup = torch.tensor(np.array(oup_mx), device=q.device)
 
         return self.proj_drop(self.proj(oup))
 
