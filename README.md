@@ -41,7 +41,7 @@ pip install -e .
 cd ..
 ```
 
-Download the following two repositories outside the hart repository (in the same level as HART).
+Download the following two repositories outside the HART repository (in the same level as HART).
 
 Download Qwen2-VL-1.5B-Instruct
 
