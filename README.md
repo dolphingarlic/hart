@@ -10,6 +10,8 @@ Existing image generation models require large amounts of resources to generate 
 
 ## Setup
 
+Make sure your device has macOS >= 13.3 before proceeding.
+
 Download the repository and make a conda environment:
 
 ```bash
@@ -38,6 +40,7 @@ Install other packages:
 
 ```bash
 pip install -e .
+pip install mlx
 cd ..
 ```
 
