@@ -9,17 +9,19 @@ import numpy as np
 import torch
 import torchvision
 from PIL import Image
-from tqdm import tqdm
 from transformers import (
     AutoConfig,
     AutoModel,
+    AutoModelForCausalLM,
     AutoTokenizer,
     HfArgumentParser,
     set_seed,
 )
 
 from hart.modules.models.transformer import HARTForT2I
-from hart.utils import default_prompts, encode_prompts, llm_system_prompt, get_device
+from hart.utils import default_prompts, encode_prompts, llm_system_prompt, safety_check, get_device
+
+from torch.profiler import profile, record_function, ProfilerActivity
 
 
 def save_images(sample_imgs, sample_folder_dir, store_separately, prompts):
@@ -29,7 +31,7 @@ def save_images(sample_imgs, sample_folder_dir, store_separately, prompts):
 
         os.makedirs(sample_folder_dir, exist_ok=True)
         grid_np = Image.fromarray(grid_np.astype(np.uint8))
-        grid_np.save(os.path.join(sample_folder_dir, f"sample_images.png"))
+        grid_np.save(os.path.join(sample_folder_dir, "sample_images.png"))
         print(f"Example images are saved to {sample_folder_dir}")
     else:
         # bs, 3, r, r
@@ -49,6 +51,9 @@ def save_images(sample_imgs, sample_folder_dir, store_separately, prompts):
 
 def main(args):
     device = torch.device(get_device())
+    if get_device() == 'mps':
+        print('Disabled memory limit for MPS')
+        torch.mps.set_per_process_memory_fraction(0.0)
 
     model = AutoModel.from_pretrained(args.model_path)
     model = model.to(device)
@@ -57,7 +62,10 @@ def main(args):
     if args.use_ema:
         ema_model = copy.deepcopy(model)
         ema_model.load_state_dict(
-            torch.load(os.path.join(args.model_path, "ema_model.bin"))
+            torch.load(
+                os.path.join(args.model_path, "ema_model.bin"),
+                map_location=device,
+            )
         )
 
     text_tokenizer = AutoTokenizer.from_pretrained(args.text_model_path)
@@ -65,8 +73,33 @@ def main(args):
     text_model.eval()
     text_tokenizer_max_length = args.max_token_length
 
-    prompts = random.sample(default_prompts, args.batch_size)
+    # safety_checker_tokenizer = AutoTokenizer.from_pretrained(args.shield_model_path)
+    # safety_checker_model = AutoModelForCausalLM.from_pretrained(
+    #     args.shield_model_path,
+    #     torch_dtype=torch.bfloat16,
+    # ).to(device)
 
+    prompts = []
+    if args.prompt:
+        prompts = [args.prompt]
+    elif args.prompt_list:
+        prompts = args.prompts
+    else:
+        print(
+            "No prompt is provided. Will randomly sample 4 prompts from default prompts."
+        )
+        prompts = random.sample(default_prompts, 4)
+
+    # for idx, prompt in enumerate(prompts):
+    #     if safety_check.is_dangerous(
+    #         safety_checker_tokenizer, safety_checker_model, prompt
+    #     ):
+    #         prompts[idx] = random.sample(default_prompts, 1)[0]
+    #         print(
+    #             f"Detected Unsafe prompt with index {idx}, will replace by one of default prompts."
+    #         )
+
+    start_time = time.time()
     with torch.inference_mode():
         with torch.autocast(
             get_device(), enabled=True, dtype=torch.float16, cache_enabled=True
@@ -91,50 +124,25 @@ def main(args):
                 if args.use_ema
                 else model.autoregressive_infer_cfg
             )
+            with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
+                with record_function("model_inference"):
+                    output_imgs = infer_func(
+                        B=context_tensor.size(0),
+                        label_B=context_tensor,
+                        cfg=args.cfg,
+                        g_seed=args.seed,
+                        more_smooth=args.more_smooth,
+                        context_position_ids=context_position_ids,
+                        context_mask=context_mask,
+                    )
 
-            # warmup
-            for _ in tqdm(range(args.warmup_iter)):
-                output_imgs = infer_func(
-                    B=context_tensor.size(0),
-                    label_B=context_tensor,
-                    cfg=args.cfg,
-                    g_seed=args.seed,
-                    more_smooth=args.more_smooth,
-                    context_position_ids=context_position_ids,
-                    context_mask=context_mask,
-                )
+    total_time = time.time() - start_time
+    print(f"Generate {len(prompts)} images take {total_time:2f}s.")
 
-            # latency profile
-            start_time = time.time()
-            for _ in tqdm(range(args.profile_iter)):
-                (
-                    context_tokens,
-                    context_mask,
-                    context_position_ids,
-                    context_tensor,
-                ) = encode_prompts(
-                    prompts,
-                    text_model,
-                    text_tokenizer,
-                    args.max_token_length,
-                    llm_system_prompt,
-                    args.use_llm_system_prompt,
-                )
-                output_imgs = infer_func(
-                    B=context_tensor.size(0),
-                    label_B=context_tensor,
-                    cfg=args.cfg,
-                    g_seed=args.seed,
-                    more_smooth=args.more_smooth,
-                    context_position_ids=context_position_ids,
-                    context_mask=context_mask,
-                )
-            total_time = time.time() - start_time
-
-    average_time = total_time / args.profile_iter
-    print(
-        f"Generation with batch_size = {args.batch_size} take {average_time:2f}s per step."
+    save_images(
+        output_imgs.clone(), args.sample_folder_dir, args.store_seperately, prompts
     )
+    return prof
 
 
 if __name__ == "__main__":
@@ -152,8 +160,13 @@ if __name__ == "__main__":
         default="Qwen2-VL-1.5B-Instruct",
     )
     parser.add_argument(
-        "--batch_size", type=int, help="Generation batch size", default=1
+        "--shield_model_path",
+        type=str,
+        help="The path to shield model, we employ ShieldGemma-2B by default.",
+        default="pretrained_models/shieldgemma-2b",
     )
+    parser.add_argument("--prompt", type=str, help="A single prompt.", default="")
+    parser.add_argument("--prompt_list", type=list[str], default=[])
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--use_ema", type=bool, default=True)
     parser.add_argument("--max_token_length", type=int, default=300)
@@ -167,8 +180,17 @@ if __name__ == "__main__":
         help="Turn on for more visually smooth samples.",
         default=True,
     )
-    parser.add_argument("--warmup_iter", type=int, default=50)
-    parser.add_argument("--profile_iter", type=int, default=100)
+    parser.add_argument(
+        "--sample_folder_dir",
+        type=str,
+        help="The folder where the image samples are stored",
+        default="samples/",
+    )
+    parser.add_argument(
+        "--store_seperately",
+        help="Store image samples in a grid or separately, set to False by default.",
+        action="store_true",
+    )
     args = parser.parse_args()
 
-    main(args)
+    prof = main(args)

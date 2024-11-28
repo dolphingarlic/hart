@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 
 from hart.modules.diffusion import create_diffusion
+from hart.utils import get_device
 
 
 class DiffLoss(nn.Module):
@@ -63,12 +64,12 @@ class DiffLoss(nn.Module):
     def sample(self, z, temperature=1.0, cfg=1.5, sampler=None):
         # diffusion loss sampling
         if not cfg == 1.0:
-            noise = torch.randn(z.shape[0] // 2, self.in_channels).cuda()
+            noise = torch.randn(z.shape[0] // 2, self.in_channels, device=get_device())
             noise = torch.cat([noise, noise], dim=0)
             model_kwargs = dict(c=z, cfg_scale=cfg)
             sample_fn = self.net.forward_with_cfg
         else:
-            noise = torch.randn(z.shape[0], self.in_channels).cuda()
+            noise = torch.randn(z.shape[0], self.in_channels, device=get_device())
             model_kwargs = dict(c=z)
             sample_fn = self.net.forward
 

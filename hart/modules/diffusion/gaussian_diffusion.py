@@ -11,6 +11,7 @@ import numpy as np
 import torch as th
 
 from .diffusion_utils import discretized_gaussian_log_likelihood, normal_kl
+from hart.utils import get_device
 
 
 def mean_flat(tensor):
@@ -296,7 +297,7 @@ class GaussianDiffusion:
             min_log = _extract_into_tensor(
                 self.posterior_log_variance_clipped, t, x.shape
             )
-            max_log = _extract_into_tensor(np.log(self.betas), t, x.shape)
+            max_log = _extract_into_tensor(np.log(self.betas).astype(np.float32), t, x.shape)
             # The model_var_values is [-1, 1] for [min_var, max_var].
             frac = (model_var_values + 1) / 2
             model_log_variance = frac * max_log + (1 - frac) * min_log
@@ -515,7 +516,7 @@ class GaussianDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape).cuda()
+            img = th.randn(*shape, device=get_device())
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -525,7 +526,7 @@ class GaussianDiffusion:
             indices = tqdm(indices)
 
         for i in indices:
-            t = th.tensor([i] * shape[0]).cuda()
+            t = th.tensor([i] * shape[0], device=get_device())
             with th.no_grad():
                 out = self.p_sample(
                     model,
@@ -685,7 +686,7 @@ class GaussianDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape).cuda()
+            img = th.randn(*shape, device=get_device())
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -695,7 +696,7 @@ class GaussianDiffusion:
             indices = tqdm(indices)
 
         for i in indices:
-            t = th.tensor([i] * shape[0]).cuda()
+            t = th.tensor([i] * shape[0], device=get_device())
             with th.no_grad():
                 out = self.ddim_sample(
                     model,
@@ -898,7 +899,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
                             dimension equal to the length of timesteps.
     :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
     """
-    res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
+    res = th.from_numpy(arr.astype(np.float32)).to(device=timesteps.device)[timesteps].float()
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res + th.zeros(broadcast_shape, device=timesteps.device)

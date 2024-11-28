@@ -5,12 +5,18 @@ from typing import Dict, Sequence
 import torch
 import transformers
 
-__rank, __local_rank, __world_size, __device = (
+__rank, __local_rank, __world_size = (
     0,
     0,
     1,
-    "cuda" if torch.cuda.is_available() else "cpu",
 )
+
+if torch.cuda.is_available():
+    __device = "cuda"
+elif torch.backends.mps.is_available():
+    __device = "mps"
+else:
+    __device = "cpu"
 
 
 # Modified from VILA

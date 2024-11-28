@@ -10,6 +10,7 @@ from torch.nn import functional as F
 from hart.modules.models.autoencoder.quantize.var_quantize_multiple_res import (
     VectorQuantizer2 as VARQuantizer,
 )
+from hart.utils import get_device
 
 __all__ = ["HARTHybridQuantizer"]
 
@@ -40,7 +41,7 @@ class HARTHybridQuantizer(VARQuantizer):
 
         idx_list = []
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type=get_device(), enabled=False):
             mean_vq_loss: torch.Tensor = 0.0
             vocab_hit_V = torch.zeros(
                 self.vocab_size, dtype=torch.float, device=f_BChw.device
@@ -193,14 +194,14 @@ class HARTHybridQuantizer(VARQuantizer):
         HW = patch_nums[-1]
         if si != SN - 1:
             h = self.quant_resi[si / (SN - 1)](
-                F.interpolate(h_BChw, size=(HW, HW), mode="bicubic")
+                F.interpolate(h_BChw.to("cpu"), size=(HW, HW), mode="bicubic").to("mps")
             )  # conv after upsample
             f_hat.add_(h)
             return f_hat, F.interpolate(
-                f_hat,
+                f_hat.to("cpu" if get_device() == "mps" else get_device()),
                 size=(patch_nums[si + 1], patch_nums[si + 1]),
                 mode="area",
-            )
+            ).to(get_device())
         else:
             h = h_BChw
             f_hat.add_(h)
