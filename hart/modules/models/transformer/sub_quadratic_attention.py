@@ -15,7 +15,6 @@ from torch import Tensor
 from torch.utils.checkpoint import checkpoint
 import math
 import logging
-
 from hart.utils.tools import get_device
 
 try:

@@ -15,6 +15,9 @@ import numpy as np
 
 from hart.modules.models.transformer.sub_quadratic_attention import efficient_dot_product_attention
 from hart.modules.networks.utils import DropPath, drop_path
+import mlx.core.fast as fast #for rope
+
+from einops import rearrange #going to use these operations in oder to 
 
 try:
     import hart_backend.fused_kernels
@@ -157,15 +160,15 @@ def get_position_ids(batch_size, patch_nums, device, si=-1, m_maskgit=None):
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
+    x1 = x[..., : x.shape[-1] // 2] #similar implementation as pytorch
     x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
+    return mx.concatenate([-x2, x1], axis=3)
 
 
 # from hf transformers:
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 # unsqueeze_dim=2 because by default our qk has shape [batch_size, seq_len, heads, head_dim]
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=2):
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=2): #might not need to use this anymore when porting to MLX
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
@@ -185,9 +188,9 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=2):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
+    cos = mx.expand_dims(cos, unsqueeze_dim) #adapted this function for mx
+    sin = mx.expand_dims(sin, unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin) 
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
@@ -1106,6 +1109,9 @@ class LlamaAttention(nn.Module):
                 scale_mul = scale_mul.transpose(1, 2)  # 1H11 to 11H1
             q = F.normalize(q, dim=-1).mul(scale_mul)
             k = F.normalize(k, dim=-1)
+        
+        q = mx.array(q.cpu().numpy().tolist()) #adapting qkv to 
+        k = mx.array(k.cpu().numpy().tolist()) 
 
         ################## Use naive rotary embedding ##################
         # apply position embedding to visual tokens
@@ -1113,21 +1119,55 @@ class LlamaAttention(nn.Module):
             # position_ids exist for c2i
             # or t2i when stage id != 0
             # or t2i training phase (stage id = -1)
-            cos, sin = self.rotary_emb(v, position_ids)
+            cos, sin = self.rotary_emb(v, position_ids) #this is dependent on existing RoPE implementation --> No MX support exists currently
+            cos = mx.array(cos.cpu().numpy().tolist())
+            sin = mx.array(sin.cpu().numpy().tolist())
         elif self.context_token > 0:
             if si == -1:
-                # training, all tokens
+                # training, all tokens --> can probably skip this implementation for rope
                 cos, sin = self.rotary_emb(v, position_ids)
+                cos = mx.array(cos.cpu().numpy().tolist())
+                sin = mx.array(sin.cpu().numpy().tolist())
+
                 cos_c, sin_c = self.context_rotary_emb(v, context_position_ids)
-                cos, sin = torch.cat([cos_c, cos], 1), torch.cat([sin_c, sin], 1)
+                cos_c_mx = mx.array(cos_c.cpu().numpy().tolist())
+                sin_c_mx = mx.array(sin_c.cpu().numpy().tolist())
+                
+                cos, sin = mx.concatenate([cos_c_mx, cos], 1), mx.concatenate([sin_c_mx, sin], 1)
+                # print(context_position_ids)
+                # new_q = mx.array(q.cpu().numpy().tolist())
+                # new_k = mx.array(k.cpu().numpy().tolist())
+                # breakpoint()
+                # q = fast.rope(new_q, )
+                # k = fast.rope(new_k, )
+                # pass
             elif si == 0:
                 # inference step 1, only context tokens
+                #focus on rope implementation here
                 cos_c, sin_c = self.context_rotary_emb(v, context_position_ids)
-                cos, sin = cos_c, sin_c
+                cos_c_mx = mx.array(cos_c.cpu().numpy().tolist())
+                sin_c_mx = mx.array(sin_c.cpu().numpy().tolist())
+                cos, sin = cos_c_mx, sin_c_mx
+                #going to d
+                # new_context = mx.array(context_position_ids.cpu().numpy().tolist())
+     
+                # breakpoint()
+                # new_q = mx.array(q.cpu().numpy().tolist())
+                # new_k = mx.array(k.cpu().numpy().tolist())
+                # breakpoint()
+                # q = fast.rope(new_q, )
+                # k = fast.rope(new_k, )
             else:
                 # si > 0, no need to add rotary emb for context
                 # inference step > 1, only new tokens
                 cos, sin = self.rotary_emb(v, position_ids)
+                cos = mx.array(cos.cpu().numpy().tolist())
+                sin = mx.array(sin.cpu().numpy().tolist())
+                # new_q = mx.array(q)
+                # new_k = mx.array(k)
+                # q = fast.rope(new_q, )
+                # k = fast.rope(new_k, )
+
         else:
             print("Context token cannot be negative", self.context_token)
             raise NotImplementedError
@@ -1184,8 +1224,16 @@ class LlamaAttention(nn.Module):
                 self.cached_k = k
                 self.cached_v = v
             else:
-                k = self.cached_k = torch.cat((self.cached_k, k), dim=dim_cat)
-                v = self.cached_v = torch.cat((self.cached_v, v), dim=dim_cat)
+
+                if torch.is_tensor(v): #only for iteration 1
+                    v = mx.array(v.cpu().numpy().tolist()) 
+                if torch.is_tensor(self.cached_v):
+                    self.cached_v = mx.array(self.cached_v.cpu().numpy().tolist()) 
+
+                self.cached_k = mx.concatenate([self.cached_k, k], axis=dim_cat)
+                k = self.cached_k
+                self.cached_v = mx.concatenate([self.cached_v, v], axis=dim_cat)
+                v = self.cached_v
 
         dropout_p = self.attn_drop if self.training else 0.0
         if using_flash:
@@ -1210,13 +1258,17 @@ class LlamaAttention(nn.Module):
                 scale=self.scale,
             ).view(B, L, C)
         else:
+            # print("this is the type of v: ", v.type)
+            if torch.is_tensor(v):
+                v = mx.array(v.cpu().numpy()) #only for iteration 0
+    
             oup_mx = mx.fast.scaled_dot_product_attention(
-                mx.array(q.cpu().numpy()),
-                mx.array(k.cpu().numpy()),
-                mx.array(v.cpu().numpy()),
+                q, 
+                k, 
+                v,
                 scale=self.scale
             ).transpose(0, 2, 1, 3).reshape(B, L, C)
-            oup = torch.tensor(np.array(oup_mx), device=q.device)
+            oup = torch.tensor(np.array(oup_mx), device="mps") #changed device to mps
 
         return self.proj_drop(self.proj(oup))
 
